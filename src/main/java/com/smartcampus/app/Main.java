@@ -59,6 +59,8 @@ public final class Main {
         Wrapper wrapper = Tomcat.addServlet(ctx, "jersey", jerseyServlet);
         wrapper.setLoadOnStartup(1);
         wrapper.addMapping(API_MAPPING);
+        // Also map the exact path so GET /api/v1 (no trailing slash) reaches Jersey.
+        wrapper.addMapping("/api/v1");
 
         tomcat.start();
         return tomcat;

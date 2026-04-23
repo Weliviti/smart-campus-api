@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
@@ -17,13 +17,15 @@
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jersey.version>2.41</jersey.version>
+        <tomcat.version>9.0.95</tomcat.version>
         <junit.version>5.10.2</junit.version>
     </properties>
 
     <dependencies>
+        <!-- Jersey JAX-RS running inside a Servlet container (Tomcat). -->
         <dependency>
             <groupId>org.glassfish.jersey.containers</groupId>
-            <artifactId>jersey-container-grizzly2-http</artifactId>
+            <artifactId>jersey-container-servlet</artifactId>
             <version>${jersey.version}</version>
         </dependency>
         <dependency>
@@ -35,6 +37,13 @@
             <groupId>org.glassfish.jersey.media</groupId>
             <artifactId>jersey-media-json-jackson</artifactId>
             <version>${jersey.version}</version>
+        </dependency>
+
+        <!-- Embedded Tomcat 9 (javax.servlet, matches Jersey 2.x). -->
+        <dependency>
+            <groupId>org.apache.tomcat.embed</groupId>
+            <artifactId>tomcat-embed-core</artifactId>
+            <version>${tomcat.version}</version>
         </dependency>
 
         <dependency>

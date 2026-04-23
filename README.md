@@ -170,6 +170,27 @@ curl -s -i -X POST http://localhost:8080/api/v1/sensors \
      -d '{"id":"GHOST-1","type":"CO2","status":"ACTIVE","roomId":"DOES-NOT-EXIST"}'
 ```
 
+### 3.10 Trigger the 403 state-constraint mapper
+
+```bash
+# 1. Create a sensor in MAINTENANCE status.
+curl -s -X POST http://localhost:8080/api/v1/sensors \
+     -H "Content-Type: application/json" \
+     -d '{"id":"MAINT-001","type":"Temperature","status":"MAINTENANCE","roomId":"LIB-301"}'
+
+# 2. Attempt to post a reading to it — returns 403 Forbidden.
+curl -s -i -X POST http://localhost:8080/api/v1/sensors/MAINT-001/readings \
+     -H "Content-Type: application/json" \
+     -d '{"value":22.5}'
+```
+
+### 3.11 Trigger the 500 global safety-net mapper
+
+```bash
+# Forces an unhandled RuntimeException — proves no stack trace leaks to the client.
+curl -s http://localhost:8080/api/v1/test-error
+```
+
 ---
 
 ## 4. Conceptual Report — Answers to Coursework Questions

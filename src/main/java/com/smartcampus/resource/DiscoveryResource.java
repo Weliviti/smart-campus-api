@@ -46,6 +46,16 @@ public class DiscoveryResource {
         return Response.ok(body).build();
     }
 
+    /**
+     * Intentionally throws a RuntimeException so the video demo can prove that
+     * the GlobalExceptionMapper returns a clean JSON 500 with no stack trace.
+     */
+    @GET
+    @Path("/test-error")
+    public Response testError() {
+        throw new RuntimeException("Intentional test error — global safety net demo.");
+    }
+
     private Map<String, String> contact() {
         Map<String, String> c = new LinkedHashMap<>();
         c.put("name", "Smart Campus Facilities");

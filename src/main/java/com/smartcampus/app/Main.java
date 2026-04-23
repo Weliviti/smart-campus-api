@@ -1,16 +1,20 @@
 package com.smartcampus.app;
 
-import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
+import org.apache.catalina.Context;
+import org.apache.catalina.LifecycleException;
+import org.apache.catalina.Wrapper;
+import org.apache.catalina.startup.Tomcat;
 import org.glassfish.jersey.server.ResourceConfig;
-import org.glassfish.grizzly.http.server.HttpServer;
+import org.glassfish.jersey.servlet.ServletContainer;
 
-import java.io.IOException;
+import java.io.File;
 import java.net.URI;
 import java.util.logging.Logger;
 
 /**
- * Entry point: bootstraps an embedded Grizzly HTTP server hosting the
- * {@link SmartCampusApplication} JAX-RS application.
+ * Entry point: bootstraps an embedded Tomcat 9 server hosting the
+ * {@link SmartCampusApplication} JAX-RS application via Jersey's
+ * ServletContainer. Jersey is mounted at /api/v1/*.
  */
 public final class Main {
 
@@ -18,6 +22,7 @@ public final class Main {
 
     private static final String DEFAULT_HOST = "0.0.0.0";
     private static final int DEFAULT_PORT = 8080;
+    private static final String API_MAPPING = "/api/v1/*";
 
     private Main() {
         // utility class
@@ -30,28 +35,52 @@ public final class Main {
         return URI.create("http://" + host + ":" + port + "/");
     }
 
-    public static HttpServer startServer() {
-        // Wrap our javax.ws.rs.core.Application subclass for Grizzly/Jersey.
-        final ResourceConfig rc = ResourceConfig.forApplication(new SmartCampusApplication());
-        return GrizzlyHttpServerFactory.createHttpServer(baseUri(), rc);
+    public static Tomcat startServer() throws LifecycleException {
+        String host = System.getProperty("server.host", DEFAULT_HOST);
+        int port = Integer.parseInt(System.getProperty("server.port",
+                String.valueOf(DEFAULT_PORT)));
+
+        Tomcat tomcat = new Tomcat();
+        tomcat.setHostname(host);
+        tomcat.setPort(port);
+        // Force connector creation so Tomcat actually listens on the port.
+        tomcat.getConnector();
+
+        // Tomcat needs a "base dir" to write work files into. Using the
+        // system tmp directory keeps the app portable.
+        File baseDir = new File(System.getProperty("java.io.tmpdir"));
+        Context ctx = tomcat.addContext("", baseDir.getAbsolutePath());
+
+        // Wrap our JAX-RS Application in Jersey's ServletContainer, then
+        // register that servlet with Tomcat and map it under /api/v1/*.
+        ResourceConfig config = ResourceConfig.forApplication(new SmartCampusApplication());
+        ServletContainer jerseyServlet = new ServletContainer(config);
+
+        Wrapper wrapper = Tomcat.addServlet(ctx, "jersey", jerseyServlet);
+        wrapper.setLoadOnStartup(1);
+        wrapper.addMapping(API_MAPPING);
+
+        tomcat.start();
+        return tomcat;
     }
 
-    public static void main(String[] args) throws IOException {
-        final HttpServer server = startServer();
+    public static void main(String[] args) throws LifecycleException {
+        final Tomcat server = startServer();
         LOG.info("Smart Campus API running at " + baseUri() + "api/v1");
         LOG.info("Press Ctrl+C to stop.");
 
-        // Keep the JVM alive until SIGINT
+        // Stop Tomcat cleanly on SIGINT.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Shutting down Smart Campus API...");
-            server.shutdownNow();
+            try {
+                server.stop();
+                server.destroy();
+            } catch (LifecycleException e) {
+                LOG.warning("Error during shutdown: " + e.getMessage());
+            }
         }));
 
-        // Block main thread
-        try {
-            Thread.currentThread().join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        // Block main thread on Tomcat's server await loop.
+        server.getServer().await();
     }
 }

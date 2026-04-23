@@ -4,9 +4,13 @@
 **Coursework:** JAX-RS RESTful Service — "Smart Campus" Sensor & Room Management API
 
 REST API for the University of Westminster "Smart Campus" initiative, built with
-**JAX-RS (Jersey 2.41)** running on an embedded **Grizzly 2** HTTP server. All
-data is held in in-memory `ConcurrentHashMap` structures — no database,
-no Spring, pure JAX-RS as per the brief.
+**JAX-RS (Jersey 2.41)** running on an embedded **Apache Tomcat 9** servlet
+container. All data is held in in-memory `ConcurrentHashMap` structures — no
+database, no Spring, pure JAX-RS as per the brief.
+
+A simple companion Java console client
+(`com.smartcampus.client.SmartCampusClient`) is also included so the API can be
+demonstrated end-to-end without external tools.
 
 ---
 
@@ -61,7 +65,7 @@ mvn clean package
 ```
 
 This produces `target/smart-campus-api.jar` — a single runnable JAR containing
-all Jersey + Grizzly + Jackson dependencies.
+all Jersey + embedded Tomcat + Jackson dependencies.
 
 ### Run the server
 
@@ -83,6 +87,18 @@ curl -s http://localhost:8080/api/v1 | jq .
 ```
 
 You should see the discovery document with links to `rooms` and `sensors`.
+
+### Run the console client
+
+With the server running in one terminal, open a second and run:
+
+```bash
+java -cp target/smart-campus-api.jar com.smartcampus.client.SmartCampusClient
+```
+
+This brings up a numbered menu that exercises every endpoint (rooms, sensors,
+readings, discovery). Point it at a different server with a positional URL
+argument: `... SmartCampusClient http://otherhost:9090/api/v1`.
 
 ---
 

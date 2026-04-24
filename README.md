@@ -195,237 +195,202 @@ curl -s http://localhost:8080/api/v1/test-error
 
 ## 4. Conceptual Report — Answers to Coursework Questions
 
-### Part 1.1 — JAX-RS Resource lifecycle & in-memory state
+---
 
-By default, JAX-RS creates a **fresh instance of the resource class for every
-incoming HTTP request** (per-request lifecycle). This keeps request handling
-stateless at the class level, which is good for correctness but means that any
-state stored as an instance field would vanish the moment the response is
-flushed.
+### Part 1.1
 
-Because our rooms, sensors and readings have to live longer than one request,
-we keep them in a **singleton** `DataStore` (`DataStore.getInstance()`). That
-singleton is *shared* across all the per-request resource instances, so
-concurrency has to be handled explicitly:
+**Question:** Explain the default lifecycle of a JAX-RS Resource class. Is a new instance created for every request, or is it a singleton? How does this affect the way you manage in-memory data?
 
-- `ConcurrentHashMap` for the `rooms`, `sensors` and `readingsBySensor`
-  collections — gives us lock-free reads and atomic writes.
-- `synchronized` on the composite operations (`addSensor`, `removeSensor`,
-  `addReading`) because those touch **two** maps and a shared `Room` list
-  together; without the monitor, one thread could see half an update.
+**Answer:**
 
-This is the minimum needed to avoid race conditions like a sensor being added
-to the `sensors` map but not to the parent room's `sensorIds` list, or a
-reading being appended while the sensor is simultaneously being deleted.
+By default, JAX-RS creates a brand new instance of the resource class for every single HTTP request that comes in. This means any data stored directly inside the resource class would be lost as soon as the response is sent back.
 
-### Part 1.2 — Why HATEOAS?
+Because rooms, sensors, and readings need to survive across many requests, we store all data in a separate singleton class called `DataStore`. There is only ever one `DataStore` in the whole application, and every resource instance shares it.
 
-HATEOAS ("Hypermedia as the Engine of Application State") embeds navigation
-links **in the response itself** rather than asking clients to hard-code
-URIs. Our `GET /api/v1` returns:
+Since multiple requests can arrive at the same time (from different users), we need to make sure two requests do not corrupt the data at the same time. We handle this in two ways:
+
+- We use `ConcurrentHashMap` for storing rooms, sensors, and readings. This allows multiple threads to read and write safely without locking each other out for simple operations.
+- For more complex operations that touch more than one map at once (for example, adding a sensor updates both the sensors map and the room's sensor list), we use `synchronized` blocks to ensure only one thread runs that code at a time.
+
+Without these precautions, one request could see half-finished data written by another request running at the same time.
+
+---
+
+### Part 1.2
+
+**Question:** Why is HATEOAS considered a hallmark of advanced REST design? How does it benefit clients compared to static documentation?
+
+**Answer:**
+
+HATEOAS stands for "Hypermedia as the Engine of Application State." The idea is simple: instead of forcing the client to already know every URL in the API, the server includes those URLs directly in its responses.
+
+For example, when a client calls `GET /api/v1`, the response includes:
 
 ```json
 {
   "links": {
-    "self":    "http://host/api/v1",
-    "rooms":   "http://host/api/v1/rooms",
-    "sensors": "http://host/api/v1/sensors"
+    "rooms":   "http://localhost:8080/api/v1/rooms",
+    "sensors": "http://localhost:8080/api/v1/sensors"
   }
 }
 ```
 
-Client benefits:
+The client reads the link for "rooms" from the response rather than having it hard-coded in the application.
 
-- **Evolvability.** If the `rooms` path moves to `/rooms/v2`, the client just
-  follows the advertised link — no code change and no re-reading static docs.
-- **Discoverability.** A new developer can explore the API by calling the root
-  and clicking through, instead of memorising every URL template.
-- **Loose coupling.** Clients depend on *link relations* ("rooms", "self") not
-  on absolute URLs, so moving the service to a different host or port is
-  transparent.
+This has several benefits over static documentation:
 
-Static documentation describes *what existed* at a point in time; hypermedia
-describes *what is true now*, which is far more resilient as the API evolves.
+- **If URLs change**, clients automatically get the new URL from the next response. No code change is needed on the client side.
+- **New developers** can explore the API just by following links, the same way you browse a website.
+- **The client is not tied** to a specific host or port. If the server moves, the links update automatically.
 
-### Part 2.1 — IDs vs full objects when listing rooms
+Static documentation is always a snapshot of the past. HATEOAS always reflects what the server currently supports.
 
-Returning full `Room` objects (our choice) means one round-trip gives clients
-everything they need: name, capacity, and the list of sensor ids. That's ideal
-for a dashboard UI or facilities manager.
+---
 
-The trade-off:
+### Part 2.1
 
-- **Bandwidth.** A `GET /rooms` response scales with the number of rooms *and*
-  the size of each room. For thousands of rooms, that payload grows quickly.
-- **Client CPU / memory.** The client has to parse and retain the full object
-  graph even if it only needs the ids.
+**Question:** When returning a list of rooms, what are the implications of returning only IDs versus returning the full room objects?
 
-Returning **only ids** would give a thin index — cheap to transfer — and the
-client would make follow-up `GET /rooms/{id}` calls on demand ("lazy" fetch).
-That keeps bandwidth low for the list call but risks the classic N+1 problem
-if the UI always wants every room's details anyway.
+**Answer:**
 
-For this coursework the dataset is small so full objects are fine; in a real
-deployment you'd expose both (e.g. `GET /rooms?fields=id,name`) and let the
-client pick.
+This API returns the full room object for every room in the list. This means in a single request, the client gets the id, name, capacity, and sensor list for every room. This is convenient — a dashboard or management tool can display everything without making any extra requests.
 
-### Part 2.2 — Is DELETE idempotent?
+However, there is a trade-off:
 
-Yes, in the HTTP sense. Idempotency for `DELETE` means that sending the same
-request N times leaves the server in the same final state as sending it once.
+- **Returning full objects** uses more bandwidth. If there are thousands of rooms, the response becomes very large. The client also has to process and store all of that data even if it only needed the IDs.
 
-Our flow:
+- **Returning only IDs** keeps the list response small and fast. The client then makes separate requests like `GET /rooms/LIB-301` only for the rooms it actually needs. This is called lazy loading. The downside is that if the client ends up needing every room's details anyway, it now has to make hundreds of extra requests — this is known as the N+1 problem.
 
-1. First `DELETE /rooms/ABC` — the room exists, we remove it, return **204 No
-   Content**.
-2. Second, third, Nth `DELETE /rooms/ABC` — the room is already gone, we
-   return **404 Not Found**.
+For this project, the dataset is small so returning full objects is the right choice. In a large production system, a better approach would be to support both: return full objects by default, but allow clients to request `?fields=id,name` if they only need certain fields.
 
-The *response* changes (204 → 404) but the *server state* is identical after
-each call (the room is absent), which is what idempotency requires. Returning
-404 on the repeat is actually helpful: the client learns the resource is gone
-rather than being silently reassured it was "deleted" again.
+---
 
-### Part 3.1 — `@Consumes(MediaType.APPLICATION_JSON)` mismatch
+### Part 2.2
 
-`@Consumes` tells JAX-RS *"I will only bind a request body to my parameter if
-the `Content-Type` matches"*. If a client sends a `POST /sensors` with a body
-typed `text/plain` or `application/xml`:
+**Question:** Is the DELETE operation idempotent in your implementation? What happens if the same DELETE request is sent multiple times?
 
-- JAX-RS inspects the `Content-Type` header, fails to find a
-  `MessageBodyReader` for that type on a method that only declares JSON, and
-  never invokes our resource method.
-- The client is returned **HTTP 415 Unsupported Media Type** automatically.
+**Answer:**
 
-This is a strong contract: the resource method is guaranteed to only ever run
-with a parsed, JSON-deserialised `Sensor` object, so we don't have to write
-defensive parsing code.
+Yes, DELETE is idempotent in this implementation.
 
-### Part 3.2 — `@QueryParam` vs path segments for filtering
+Idempotent means: no matter how many times you send the same request, the final state of the server is the same as if you had sent it once.
 
-We filter sensors via `GET /sensors?type=CO2` (a query parameter). The
-alternative would be `GET /sensors/type/CO2` — a new path segment.
+Here is what happens step by step:
 
-Why query parameters win for filtering:
+1. **First DELETE** on a room that exists — the room is removed and the server responds with **204 No Content**.
+2. **Second DELETE** on the same room — the room is already gone, so the server responds with **404 Not Found**.
+3. **Any further DELETE** — same 404 response.
 
-1. **Resource identity stays stable.** `/sensors` *is* the collection, full
-   stop. `?type=CO2` modifies *how much* of that collection we return. A path
-   like `/sensors/type/CO2` implies "CO2" is a child resource of "type", which
-   it isn't.
-2. **Composable.** Query parameters are naturally combinable:
-   `?type=CO2&status=ACTIVE`. Doing the same with path segments bakes a rigid
-   order into every URL and explodes your routing table.
-3. **Optional by design.** `?type=` can be omitted; clients that want every
-   sensor just hit `/sensors`. A required path segment forces a value — a
-   wildcard would leak through the URL.
-4. **Caching.** HTTP caches already key on the full URL including query
-   string, so cacheability is identical.
-5. **Convention.** Every mature REST API on the web (GitHub, Stripe, Spotify)
-   uses query strings for filtering/searching — clients and tooling expect it.
+The response code changes from 204 to 404, but the server state is identical each time: the room does not exist. This satisfies the idempotency requirement.
 
-Path segments are the right choice for *hierarchy* (`/rooms/{id}/sensors`);
-query parameters are the right choice for *filtering the same collection*.
+Returning 404 on the second attempt is actually more useful than silently returning 204 again, because it tells the client clearly that the room was not there — useful for detecting bugs or duplicate requests.
 
-### Part 4.1 — Sub-resource locator benefits
+---
 
-A sub-resource locator is a method that returns **another resource object**
-instead of a `Response`:
+### Part 3.1
 
-```java
-@Path("/{sensorId}/readings")
-public SensorReadingResource readings(@PathParam("sensorId") String sensorId) {
-    if (!store.sensorExists(sensorId)) {
-        throw new NotFoundException(...);
-    }
-    return new SensorReadingResource(sensorId);
-}
-```
+**Question:** What happens technically if a client sends data to the POST /sensors endpoint with a Content-Type of `text/plain` or `application/xml` instead of `application/json`?
 
-Why this beats a single god-class with every nested path hard-coded:
+**Answer:**
 
-- **Separation of concerns.** `SensorResource` knows about sensors;
-  `SensorReadingResource` knows about readings. Neither has to understand the
-  other's storage or validation rules.
-- **Context travels with the instance.** The constructor captures `sensorId`
-  once; every method on the sub-resource can use it without re-parsing path
-  parameters or re-fetching the parent.
-- **Pre-condition checks happen once.** The locator verifies the sensor exists
-  before the sub-resource ever runs. The reading methods don't have to repeat
-  that check.
-- **Testability.** `SensorReadingResource` can be instantiated directly in a
-  unit test with a fake sensor id — no need to spin up the whole routing layer.
-- **Scale.** Imagine 15 entities each with 3 nested collections. A
-  sub-resource per nested collection keeps each class small; a monolithic
-  controller would become a multi-thousand-line switch statement.
+The `@Consumes(MediaType.APPLICATION_JSON)` annotation tells JAX-RS that this endpoint will only accept requests where the `Content-Type` header is set to `application/json`.
 
-### Part 5.2 — 422 vs 404 for a missing linked reference
+If a client sends a request with `Content-Type: text/plain` or `Content-Type: application/xml`, JAX-RS checks the header and immediately sees the mismatch. It does not attempt to call the resource method at all. Instead, it automatically returns **HTTP 415 Unsupported Media Type** to the client.
 
-HTTP 404 means *"the URL you requested does not identify a resource on this
-server"*. When a client POSTs:
+This is a strong guarantee: the resource method is only ever called when the body has already been successfully parsed as JSON. There is no need to write extra defensive code inside the method to handle unexpected formats.
 
-```json
-{ "id":"TEMP-9", "type":"Temperature", "roomId":"DOES-NOT-EXIST" }
-```
+---
 
-to `/api/v1/sensors`, the URL `/sensors` **is** a valid endpoint — it exists
-and accepts POSTs. A 404 would be semantically wrong because the request
-target was fine.
+### Part 3.2
 
-The actual problem is *inside* the request body: the JSON is syntactically
-valid (`@Consumes` accepted it, Jackson parsed it), but one of its fields
-references a resource the server can't find. **RFC 4918 §11.2** defines
-**HTTP 422 Unprocessable Entity** for exactly this case: "the server
-understands the content type, the syntax is correct, but it was unable to
-process the contained instructions". That maps precisely to "you sent me a
-Sensor pointing at a non-existent Room".
+**Question:** Why is using `@QueryParam` for filtering (e.g., `?type=CO2`) better than putting the filter in the URL path (e.g., `/sensors/type/CO2`)?
 
-Using 422 tells the client "your URL and your JSON are both fine — it's the
-*data* that's wrong". Using 404 would mislead them into debugging their URL
-instead of their payload.
+**Answer:**
 
-### Part 5.4 — Why leaking stack traces is dangerous
+We chose to filter sensors using a query parameter: `GET /api/v1/sensors?type=CO2`.
 
-An uncaught Java stack trace embedded in a response body is a small
-intelligence gift to an attacker:
+The alternative would have been a path like `GET /api/v1/sensors/type/CO2`, but this approach has several problems:
 
-- **Library inventory.** Exact versions of Jersey, Grizzly, Jackson, JDK, etc.
-  become visible — feeding straight into public CVE lookups.
-- **Package / class layout.** Internal package names
-  (`com.smartcampus.store.DataStore`) reveal the domain model and hint at what
-  other endpoints likely exist.
-- **Absolute file paths.** Traces include source files and line numbers
-  (`DataStore.java:87`), which can leak deployment paths or OS hints.
-- **Code-logic fingerprints.** An `NPE` at a particular call site tells the
-  attacker exactly which user-supplied input reached which unchecked code
-  path — prime material for crafting a targeted fuzz payload.
-- **Injection probes.** Attackers deliberately send malformed input hoping to
-  trigger traces; each leaked trace is essentially a free debugging session
-  against the production server.
+- **It implies the wrong meaning.** A URL path represents a hierarchy of resources. `/sensors/type/CO2` suggests that `CO2` is a specific resource that lives inside `type`, which is not true. `/sensors` is the collection; `?type=CO2` is just a filter on that collection.
+- **It is not optional.** A path segment must always have a value. With a query parameter, clients who want all sensors just call `/sensors` with no parameter at all.
+- **It does not compose well.** If you want to filter by both type and status, a query parameter approach gives you `?type=CO2&status=ACTIVE` naturally. With path segments, you would need to design a new route for every combination.
+- **It breaks conventions.** Every well-known REST API (GitHub, Stripe, Google) uses query parameters for filtering and searching. Developers expect it, and tools like Postman are designed around it.
 
-Our `GlobalExceptionMapper<Throwable>` logs the full trace **server-side**
-(for our observability) and returns a generic `INTERNAL_ERROR` JSON body to
-the client. The attacker gets nothing; we get our forensic data.
+Query parameters are the correct tool for narrowing down a collection. Path segments are the correct tool for navigating a hierarchy.
 
-### Part 5.5 — Why JAX-RS filters instead of `Logger.info()` in every method
+---
 
-Logging is a **cross-cutting concern** — every endpoint needs it, but logging
-code has nothing to do with a handler's business logic. Inlining
-`Logger.info()` calls in every resource method would:
+### Part 4.1
 
-1. **Duplicate the same boilerplate** in 10+ methods. Change the log format
-   and you edit 10 files.
-2. **Be forgettable.** A new endpoint added tomorrow won't have logging unless
-   the developer remembers to add it.
-3. **Not cover framework errors.** A request that fails routing never reaches
-   a resource method, so it never gets logged — but a filter does see it.
-4. **Mix concerns.** Mixing persistence, validation, and logging in the same
-   method hurts readability and testability.
+**Question:** What are the architectural benefits of the Sub-Resource Locator pattern compared to putting all nested paths in one large controller class?
 
-A `ContainerRequestFilter` + `ContainerResponseFilter` runs once per request
-in the JAX-RS pipeline regardless of which endpoint matched, captures the
-method / URI / status, and stays completely decoupled from the handlers.
-Add a new endpoint tomorrow — it's logged automatically. Change the format —
-you edit one class.
+**Answer:**
+
+A sub-resource locator is a method in the parent resource that, instead of returning a response directly, returns a new resource object. JAX-RS then uses that new object to handle the rest of the request.
+
+In this project, `SensorResource` has a locator for `/{sensorId}/readings` that returns a `SensorReadingResource` instance. All reading-related logic lives in that separate class.
+
+The benefits of this approach over one large class are:
+
+- **Each class has one job.** `SensorResource` manages sensors. `SensorReadingResource` manages readings. Neither class needs to know the internal details of the other.
+- **Validation happens in one place.** The locator checks whether the sensor exists before the sub-resource is even created. The reading methods do not need to repeat this check — they can trust the sensor is valid.
+- **The sensor ID is passed once.** The sub-resource receives the sensor ID in its constructor and all of its methods can use it directly without re-reading the URL.
+- **It is easier to test.** `SensorReadingResource` can be created and tested in isolation with a fake sensor ID, without needing to start the full server.
+- **It scales.** In a large API with many entities and nested collections, using sub-resources keeps every class small and focused. A single controller class handling everything would quickly become unmanageable.
+
+---
+
+### Part 5.2
+
+**Question:** Why is HTTP 422 more semantically accurate than HTTP 404 when a client sends a valid JSON body that references a room ID that does not exist?
+
+**Answer:**
+
+HTTP 404 means "the URL you requested was not found on this server." But in this case, the URL `/api/v1/sensors` is perfectly valid — it exists and accepts POST requests. Returning 404 would mislead the client into thinking they got the URL wrong, when they did not.
+
+The real problem is inside the request body. The JSON is valid, the Content-Type is correct, and the endpoint exists — but one of the fields in the body (`roomId`) references a room that does not exist in the system.
+
+HTTP 422 Unprocessable Entity is the correct response here. It tells the client: "Your URL is fine, your JSON is syntactically correct, but the data inside it is invalid — specifically, the room you referenced does not exist."
+
+This gives the client accurate information. A 404 would send them debugging their URL. A 422 sends them debugging their request body, which is the actual problem.
+
+---
+
+### Part 5.4
+
+**Question:** From a cybersecurity standpoint, what are the risks of exposing Java stack traces to external API consumers?
+
+**Answer:**
+
+Exposing a Java stack trace in an API response gives an attacker detailed information about the internal workings of the server. Specifically:
+
+- **Library versions are revealed.** The trace shows exactly which version of Jersey, Jackson, Tomcat, and the JDK is being used. An attacker can look up known security vulnerabilities for those exact versions.
+- **Internal package and class names are visible.** Names like `com.smartcampus.store.DataStore` reveal the structure of the application and hint at what other classes and endpoints exist.
+- **File paths and line numbers appear.** Traces include source file names and line numbers, which can reveal how the server is deployed and what operating system it runs on.
+- **Logic flaws are exposed.** A NullPointerException at a specific line tells an attacker exactly which part of the code is vulnerable and what input caused it. They can use this to craft targeted attacks.
+- **Attackers probe deliberately.** Malicious users will intentionally send bad requests to trigger errors, treating each stack trace as a free debugging session against the live server.
+
+In this project, the `GlobalExceptionMapper<Throwable>` catches all unexpected errors, logs the full stack trace on the server for the developer to read, and returns only a generic JSON error message to the client. The attacker receives no useful information.
+
+---
+
+### Part 5.5
+
+**Question:** Why is it better to use JAX-RS filters for logging rather than adding `Logger.info()` calls inside every resource method?
+
+**Answer:**
+
+Logging is needed on every single request and response, regardless of which endpoint is called. This makes it a cross-cutting concern — it has nothing to do with the business logic of any specific endpoint.
+
+If we added `Logger.info()` manually inside every resource method:
+
+- **It would be repeated everywhere.** The same logging code would appear in 10 or more methods. If the log format needed to change, every file would need to be updated.
+- **New endpoints would not be logged automatically.** Any developer who adds a new endpoint tomorrow would need to remember to add the logging themselves. It is easy to forget.
+- **Failed routing would not be logged.** If a request arrives but does not match any resource method (for example, wrong URL), it never reaches a resource method. A filter sees every request, even ones that fail routing.
+- **Business logic and logging get mixed together.** Methods that should only care about their job (creating a room, posting a reading) would be cluttered with unrelated logging code, making them harder to read and test.
+
+A `ContainerRequestFilter` runs automatically before every request, and a `ContainerResponseFilter` runs automatically after every response. They log the method, URI, and status code once, centrally, without touching any resource class. Add a new endpoint and it is logged for free.
+
 
 ---
 
